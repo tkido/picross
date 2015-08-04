@@ -1,5 +1,6 @@
 syntax: glob
 .cache
+.cache-main
 .classpath
 .project
 .settings
