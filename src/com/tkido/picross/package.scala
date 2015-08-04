@@ -10,4 +10,6 @@ package object picross {
   val table = Map(LIVE -> '■',
                   UNKNOWN -> '　',
                   DEAD -> '×')
+  
+  val SPLITTER = Array(',', ' ')
 }

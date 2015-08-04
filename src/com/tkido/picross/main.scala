@@ -7,8 +7,7 @@ object main extends App {
   
   Logger.level = Config.logLevel
   
-  val grid = Grid(8, 8, 2)
-  println(grid)
+  Parser("data/sample.txt")
 
   Logger.close()
 }

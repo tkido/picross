@@ -72,7 +72,7 @@ class FileLogger extends Logger{
   
   def log(arg: Any) {
     writer.write(arg.toString + '\n')
-    //println(arg)
+    println(arg)
   }
   
   def close() {
