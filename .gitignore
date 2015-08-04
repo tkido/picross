@@ -12,3 +12,4 @@ org.eclipse.jdt.core.prefs
 ~$*
 log/*.log
 data/**/*.txt
+data/conf.properties
