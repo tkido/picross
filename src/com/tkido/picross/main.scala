@@ -5,9 +5,11 @@ object main extends App {
   import com.tkido.tools.Logger
   import com.tkido.tools.Text
   
+  import com.tkido.tools.Math
+  
   Logger.level = Config.logLevel
   
-  Parser("data/sample.txt")
+  Parser("data/q0.txt")
 
   Logger.close()
 }
