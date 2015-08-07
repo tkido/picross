@@ -19,18 +19,18 @@ object Parser {
     val hintsList = List(hintsPair._1, hintsPair._2)
     Logger.debug(hintsList)
     
-    assert(hints.size == sizes.sum)
-    assert(hintsList(0).map(_.sum).sum == hintsList(1).map(_.sum).sum)
+    assert(hints.size == sizes.sum, "盤面の大きさとヒントの数が一致しません。")
+    assert(hintsList(0).map(_.sum).sum == hintsList(1).map(_.sum).sum, "横のヒントの合計と縦のヒントの合計が一致しません。")
     for((hints, i) <- hintsList.zipWithIndex){
       for(hint <- hints){
-        assert(sizes(1-i) >= hint.sum + hint.size - 1)
+        assert(sizes(1-i) >= hint.sum + hint.size - 1, "ヒントの合計が大きすぎる行または列があります。")
       }
     }
     
-    val changed =
+    val changes =
       for((hints, i) <- hintsList.zipWithIndex)
         yield hints.map(hint => hint.max >= sizes(1-i) - (hint.sum + hint.size - 1))
-    Logger.debug(changed)
+    Logger.debug(changes)
     
     val estimates =
       for((hints, i) <- hintsList.zipWithIndex)

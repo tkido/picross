@@ -9,7 +9,7 @@ object main extends App {
   
   Logger.level = Config.logLevel
   
-  Parser("data/q0.txt")
+  Parser("data/q_bad.txt")
 
   Logger.close()
 }
