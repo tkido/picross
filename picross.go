@@ -4,305 +4,782 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
 )
 
-// Cell states
 const (
 	UNKNOWN = 0
 	OFF     = 1
 	ON      = -1
 )
 
-// Errors
-var (
-	ErrInvalid    = errors.New("invalid puzzle")
-	ErrImpossible = errors.New("impossible to solve")
-)
-
-// Puzzle represents a Picross puzzle
-type Puzzle struct {
-	height      int
-	width       int
-	grid        [][]int
-	transposed  bool
-	widthNow    int
-	estimates   []int
-	changed     []bool
-	guess       int
-	logging     bool
-	hints       [][]int
-	rHints      [][]int // row hints
-	cHints      [][]int // column hints
+var TABLE = map[int]string{
+	UNKNOWN: "　",
+	OFF:     "×",
+	ON:      "■",
 }
 
-// Helper functions
-func sum(nums []int) int {
-	total := 0
-	for _, n := range nums {
-		total += n
+// Helper functions for math
+func sum(arr []int) int {
+	s := 0
+	for _, v := range arr {
+		s += v
 	}
-	return total
+	return s
 }
 
 func factorial(n int) int {
-	result := 1
-	for i := 1; i <= n; i++ {
-		result *= i
+	if n <= 1 {
+		return 1
 	}
-	return result
+	r := 1
+	for i := 1; i <= n; i++ {
+		r *= i
+	}
+	return r
 }
 
 func combination(n, k int) int {
-	if k > n || k < 0 {
+	if k < 0 || k > n {
 		return 0
 	}
 	return factorial(n) / (factorial(k) * factorial(n-k))
 }
 
-func max(nums []int) int {
-	if len(nums) == 0 {
-		return 0
-	}
-	maxVal := nums[0]
-	for _, n := range nums[1:] {
-		if n > maxVal {
-			maxVal = n
-		}
-	}
-	return maxVal
+// Puzzle structure
+type Puzzle struct {
+	Height     int
+	Width      int
+	WidthNow   int
+	Grid       [][]int
+	Transposed bool
+	Hints      [][]int
+	RHints     [][]int
+	CHints     [][]int
+	Estimates  []int
+	Changed    []bool
+	GuessPos   int
+	Logging    bool
+	Writer     io.Writer
 }
 
-func maxInts(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-// cellToString converts a cell value to its string representation
-func cellToString(cell int) string {
-	switch cell {
-	case UNKNOWN:
-		return "　"
-	case OFF:
-		return "×"
-	case ON:
-		return "■"
-	default:
-		return "?"
-	}
-}
-
-// NewPuzzle creates a new puzzle from input lines
 func NewPuzzle(lines []string, logging bool) (*Puzzle, error) {
 	if len(lines) == 0 {
-		return nil, ErrInvalid
+		return nil, errors.New("empty input")
 	}
 
 	// Parse dimensions
-	parts := strings.FieldsFunc(lines[0], func(r rune) bool {
-		return r == ',' || r == ' '
-	})
-	if len(parts) != 2 {
-		return nil, ErrInvalid
+	dims := splitInts(lines[0])
+	if len(dims) < 2 {
+		return nil, errors.New("invalid dimensions")
 	}
-
-	height, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return nil, ErrInvalid
-	}
-	width, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return nil, ErrInvalid
-	}
-
-	// Initialize grid
-	grid := make([][]int, height)
-	for i := range grid {
-		grid[i] = make([]int, width)
-		// Initialize all cells to UNKNOWN
-		for j := range grid[i] {
-			grid[i][j] = UNKNOWN
-		}
-	}
+	height, width := dims[0], dims[1]
 
 	p := &Puzzle{
-		height:    height,
-		width:     width,
-		grid:      grid,
-		transposed: false,
-		widthNow:  width,
-		estimates: make([]int, height+width),
-		changed:   make([]bool, height+width),
-		guess:     0,
-		logging:   logging,
+		Height:   height,
+		Width:    width,
+		WidthNow: width,
+
+		Estimates: make([]int, height+width),
+		Changed:   make([]bool, height+width),
+		Logging:   logging,
+		Writer:    os.Stdout,
 	}
 
-	// Parse hints
-	hints := make([][]int, 0, height+width)
-	for i := 1; i < len(lines); i++ {
-		if lines[i] == "" {
-			continue
+	for i := 0; i < height; i++ {
+		p.Grid = append(p.Grid, make([]int, width)) // Use append to initialize correctly if Gener was typo
+		p.Grid[i] = make([]int, width)
+		for j := 0; j < width; j++ {
+			p.Grid[i][j] = UNKNOWN
 		}
-		parts := strings.FieldsFunc(lines[i], func(r rune) bool {
-			return r == ',' || r == ' '
-		})
-		hint := make([]int, len(parts))
-		for j, part := range parts {
-			hint[j], err = strconv.Atoi(part)
-			if err != nil {
-				return nil, ErrInvalid
+	}
+	// Fix: p.Grid initialization above had a typo in previous thought, simplified here:
+	p.Grid = make([][]int, height)
+	for i := range p.Grid {
+		p.Grid[i] = make([]int, width)
+	}
+
+	hintLines := lines[1:]
+	if len(hintLines) != height+width {
+		return nil, errors.New("number of hints does not match dimensions")
+	}
+
+	p.Hints = make([][]int, len(hintLines))
+	for i, line := range hintLines {
+		p.Hints[i] = splitInts(line)
+	}
+
+	p.RHints = p.Hints[:height]
+	p.CHints = p.Hints[height:]
+
+	if sumHints(p.RHints) != sumHints(p.CHints) {
+		return nil, errors.New("sum of row hints and column hints do not match")
+	}
+
+	// Initialize estimates and changed flags
+	newHints := make([][]int, 0, len(p.Hints))
+
+	// We need to iterate exactly like Ruby: each_line equivalent logic here or just loop
+	// In Ruby init:
+	/*
+	   hints_new = []
+	   each_line do |row, index, hint|
+	     ...
+	   end
+	   @hints = hints_new
+	*/
+	// Since 'each_line' logic depends on hints traversal which is 0..H+W-1
+	// And in init, transposed is false.
+
+	for index, hint := range p.Hints {
+		// Validation
+		if p.WidthNow < sum(hint)+len(hint)-1 {
+			return nil, errors.New("hints too large for row/col")
+		}
+
+		if len(hint) == 1 && hint[0] == 0 {
+			p.Changed[index] = true
+			p.Estimates[index] = 1
+			newHints = append(newHints, []int{p.WidthNow}) // Special case? Wait, Ruby says: hints_new.push([@width_now])
+			// Actually looking closely at Ruby code:
+			// if hint == [0] -> hints_new.push([@width_now])
+			// This treating 0 hint as a block of empty space? No, wait.
+			// In solving logic, if hint is [Width], and we solve for OFF, it fills with OFF?
+			// Let's look at solve logic.
+			// Ruby `_solve` handles hints.
+			// If `hint == [0]`, `sum` is 0.
+			// Actually, if `hint == [0]`, it pushes `[@width_now]` into `hints_new`.
+			// Let's stick to Ruby logic exactly.
+		} else {
+			maxH := 0
+			for _, h := range hint {
+				if h > maxH {
+					maxH = h
+				}
 			}
+			if maxH > p.WidthNow-(sum(hint)+len(hint)-1) {
+				p.Changed[index] = true
+			}
+			p.Estimates[index] = combination(p.WidthNow-sum(hint)+1, len(hint))
+
+			// arr = [0]; hint.each{|n| arr.push(n, 1)}; arr.pop; hints_new.push arr.push(0)
+			// This adds explicit 0 gap requirements to the hint array for the recursive solver?
+			// e.g. hint [2, 1] becomes [0, 2, 1, 1, 1, 0] ? No.
+			// Ruby: arr.push(n, 1) -> [0, 2, 1, 1, 1] -> pop -> [0, 2, 1, 1] -> push(0) -> [0, 2, 1, 1, 0]
+			// This structure seems to be: [gap_min, block_size, gap_min, block_size, ..., gap_min]
+
+			arr := []int{0}
+			for _, n := range hint {
+				arr = append(arr, n, 1)
+			}
+			if len(arr) > 0 {
+				arr = arr[:len(arr)-1] // pop
+			}
+			arr = append(arr, 0)
+			newHints = append(newHints, arr)
 		}
-		hints = append(hints, hint)
 	}
-
-	if len(hints) != height+width {
-		return nil, fmt.Errorf("盤面の大きさとヒントの数が一致しません。got %d hints, expected %d", len(hints), height+width)
-	}
-
-	p.rHints = hints[0:height]
-	p.cHints = hints[height:height+width]
-
-	// Validate hints
-	rSum := 0
-	for _, hint := range p.rHints {
-		rSum += sum(hint)
-	}
-	cSum := 0
-	for _, hint := range p.cHints {
-		cSum += sum(hint)
-	}
-	if rSum != cSum {
-		return nil, fmt.Errorf("横のヒントの合計と縦のヒントの合計が一致しません。rows: %d, cols: %d", rSum, cSum)
-	}
-
-	// Process hints (simplified for now)
-	p.hints = hints
-
-	// Initialize changed flags
-	for i := range p.changed {
-		p.changed[i] = true
-	}
+	p.Hints = newHints
+	// Update RHints/CHints views
+	p.RHints = p.Hints[:height]
+	p.CHints = p.Hints[height:]
 
 	return p, nil
 }
 
-// String returns a string representation of the puzzle
-func (p *Puzzle) String() string {
-	var buf strings.Builder
+func splitInts(s string) []int {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	})
+	res := make([]int, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		v, _ := strconv.Atoi(p)
+		res = append(res, v)
+	}
+	return res
+}
 
-	// Find max hint sizes
+func sumHints(hints [][]int) int {
+	t := 0
+	for _, h := range hints {
+		t += sum(h)
+	}
+	return t
+}
+
+func (p *Puzzle) String(cursorRow int) string {
 	rhMax := 0
-	for _, hint := range p.rHints {
-		if len(hint) > rhMax {
-			rhMax = len(hint)
+	for _, h := range p.RHints {
+		if len(h) > rhMax {
+			rhMax = len(h)
 		}
 	}
 	chMax := 0
-	for _, hint := range p.cHints {
-		if len(hint) > chMax {
-			chMax = len(hint)
+	for _, h := range p.CHints {
+		if len(h) > chMax {
+			chMax = len(h)
 		}
 	}
 
-	// Print column hints
-	for n := chMax - 1; n >= 0; n-- {
-		// Print padding
-		for i := 0; i < rhMax; i++ {
-			buf.WriteString("　")
-		}
-		buf.WriteString("｜")
+	var sb strings.Builder
 
-		// Print column hint values
-		for _, hint := range p.cHints {
+	// Column headers
+	for n := chMax - 1; n >= 0; n-- {
+		sb.WriteString(strings.Repeat("　", rhMax) + "｜")
+		for _, hint := range p.CHints {
+			// Hint in Ruby (after init) is transformed to [0, n, 1, n, ... 0]
+			// So we need to recover original hint for display?
+			// The Ruby code `to_s` uses `@c_hints` which points to `@hints` which was replaced by `hints_new`.
+			// So `@c_hints` contains the modified hints.
+			// Ruby `to_s`: `hint[n]` accesses the n-th element of the modified hint array?
+			// Wait, Ruby `to_s`: `(hint[n]) ? sprintf... : ' '`.
+			// If `hint` is the expanded form like [0, 2, 1, 1, 0], then `hint[n]` is just a number.
+			// Oh, but `ch_max` is calculated from `hint.size`.
+			// In Ruby's init: `hints_new` elements are arrays.
+			// If original hint was [2, 1], new is [0, 2, 1, 1, 0] (len 5).
+			// Display logic loops `n` from `ch_max-1` down to 0.
+			// It prints `hint.reverse[n]`.
+			// This prints the hint numbers vertically.
+			// But the modified hint array contains 0s and 1s (gaps). We probably don't want to print those as hints?
+			// Ruby code: `hint.reverse[n] % 100`.
+			// If the hint is [0, 2, 1, 1, 0], reverse is [0, 1, 1, 2, 0].
+			// If I print all of them, I get 0s and 1s mixed in.
+			// Does the Ruby code print the gaps?
+			// The sample format shows `2 1`.
+			// Ruby output of `puts puzzle` should be checked.
+			// Actually, looking at `to_s`:
+			// `sprintf("%2d", hint.reverse[n] % 100)`
+			// This acts on the *internal representation*.
+			// So yes, it prints the converted representation.
+			// For [2, 1] -> [0, 2, 1, 1, 0].
+			// Reverse: [0, 1, 1, 2, 0].
+			// It seems it will print 0s and 1s?
+			// Wait, standard Picross usually only shows the block sizes (2 and 1).
+			// Let's re-read Ruby init.
+			// Original: `hint` [2, 1].
+			// `arr.push(n, 1)` -> [0, 2, 1, 1, 0].
+			// The 1s are mandatory gaps (OFF). The 0s are optional gaps.
+			// It seems the Ruby code *does* print these internal values?
+			// That would be weird for a user, but accurate for internal state debugging.
+			// But wait, `hint` in `to_s` uses `@c_hints`.
+			// Ruby Init: `@hints = hints_new`.
+			// Use of `dup` on `hint` in `solve` suggests it cares about these.
+			// I will strictly copy the logic. If it prints internal repr, so be it.
+
 			if n < len(hint) {
-				fmt.Fprintf(&buf, "%2d", hint[len(hint)-1-n]%100)
+				// hint.reverse[n]
+				// Go reverse access: hint[len-1 - n]
+				val := hint[len(hint)-1-n]
+				sb.WriteString(fmt.Sprintf("%2d", val%100))
 			} else {
-				buf.WriteString("　")
+				sb.WriteString("　")
 			}
 		}
-		buf.WriteString("｜\n")
+		sb.WriteString("｜\n")
 	}
 
-	// Print separator
-	for i := 0; i < rhMax; i++ {
-		buf.WriteString("--")
-	}
-	buf.WriteString("＋")
-	for i := 0; i < p.width; i++ {
-		buf.WriteString("--")
-	}
-	buf.WriteString("＋\n")
+	sb.WriteString(strings.Repeat("--", rhMax) + "＋" + strings.Repeat("--", p.WidthNow) + "＋\n")
 
-	// Print rows with hints
-	for row, hint := range p.rHints {
-		// Print row hints with padding
-		padding := rhMax - len(hint)
-		for i := 0; i < padding; i++ {
-			buf.WriteString("　")
+	for row, hint := range p.RHints {
+		sb.WriteString(strings.Repeat("　", rhMax-len(hint)))
+		for _, n := range hint {
+			sb.WriteString(fmt.Sprintf("%2d", n%100))
 		}
-		for _, h := range hint {
-			fmt.Fprintf(&buf, "%2d", h%100)
+		sb.WriteString("｜")
+		for col := 0; col < p.WidthNow; col++ {
+			sb.WriteString(TABLE[p.Grid[row][col]])
 		}
-		buf.WriteString("｜")
-
-		// Print cells
-		for col := 0; col < p.width; col++ {
-			buf.WriteString(cellToString(p.grid[row][col]))
+		sb.WriteString("｜")
+		if row == cursorRow {
+			sb.WriteString("<<<<")
 		}
-		buf.WriteString("｜\n")
+		sb.WriteString("\n")
+	}
+	sb.WriteString(strings.Repeat("--", rhMax) + "＋" + strings.Repeat("--", p.WidthNow) + "＋")
+	return sb.String()
+}
+
+func (p *Puzzle) Dup() *Puzzle {
+	newP := &Puzzle{
+		Height:     p.Height,
+		Width:      p.Width,
+		WidthNow:   p.WidthNow,
+		Transposed: p.Transposed,
+		GuessPos:   p.GuessPos,
+		Logging:    p.Logging,
+		Writer:     p.Writer,
 	}
 
-	// Print bottom separator
-	for i := 0; i < rhMax; i++ {
-		buf.WriteString("--")
+	// Deep copy Grid
+	newP.Grid = make([][]int, len(p.Grid))
+	for i := range p.Grid {
+		newP.Grid[i] = make([]int, len(p.Grid[i]))
+		copy(newP.Grid[i], p.Grid[i])
 	}
-	buf.WriteString("＋")
-	for i := 0; i < p.width; i++ {
-		buf.WriteString("--")
-	}
-	buf.WriteString("＋")
 
-	return buf.String()
+	// Hints are slices of ints, structure doesn't change, but contents might be modified?
+	// In solve, `hint.dup` is used. The `Hints` array of arrays structure is static,
+	// but the inner arrays might be modified?
+	// Ruby `solve` takes `hint`, then `hint.dup`. It doesn't modify the *original* hint in `@hints`.
+	// So shallow copy of Hints structure (slice of slices) is fine IF we don't modify underlying arrays in place globally.
+	// However, `p.Hints` refers to `p.RHints` and `p.CHints`.
+	// Let's do a deep copy to be safe.
+	newP.Hints = make([][]int, len(p.Hints))
+	for i, h := range p.Hints {
+		newP.Hints[i] = make([]int, len(h))
+		copy(newP.Hints[i], h)
+	}
+	// Re-link RHints/CHints
+	newP.RHints = newP.Hints[:p.Height]
+	newP.CHints = newP.Hints[p.Height:]
+
+	newP.Estimates = make([]int, len(p.Estimates))
+	copy(newP.Estimates, p.Estimates)
+
+	newP.Changed = make([]bool, len(p.Changed))
+	copy(newP.Changed, p.Changed)
+
+	return newP
+}
+
+func (p *Puzzle) ChangedAny() bool {
+	for _, c := range p.Changed {
+		if c {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Puzzle) IsSolved() bool {
+	for _, row := range p.Grid {
+		for _, cell := range row {
+			if cell == UNKNOWN {
+				return false
+			}
+		}
+	}
+	return !p.ChangedAny()
+}
+
+func (p *Puzzle) Guess(val int) (*Puzzle, error) {
+	for {
+		row := p.GuessPos / p.Width
+		col := p.GuessPos % p.Width
+		if row >= p.Height {
+			return p, nil // Should not happen if solving is robust?
+		}
+
+		if p.Grid[row][col] == UNKNOWN {
+			p.Set(row, col, val)
+			p.Changed[row] = true
+			return p, nil
+		}
+		p.GuessPos++
+	}
+}
+
+func (p *Puzzle) Set(row, col, val int) {
+	if p.Grid[row][col] != val {
+		p.Grid[row][col] = val
+		// Update changed flag
+		index := 0
+		if p.Transposed {
+			index = col
+		} else {
+			index = p.Height + col
+		}
+		p.Changed[index] = true
+		p.Estimates[index] = p.Estimates[index] * 4 / 5
+	}
+}
+
+func (p *Puzzle) Transpose() {
+	newGrid := make([][]int, p.Width) // New height is old width
+	for i := 0; i < p.Width; i++ {
+		newGrid[i] = make([]int, p.Height)
+		for j := 0; j < p.Height; j++ {
+			newGrid[i][j] = p.Grid[j][i]
+		}
+	}
+	p.Grid = newGrid
+	p.Transposed = !p.Transposed
+	if p.Transposed {
+		p.WidthNow = p.Height
+		// Swap hints
+		p.RHints, p.CHints = p.CHints, p.RHints
+	} else {
+		p.WidthNow = p.Width
+		p.RHints, p.CHints = p.CHints, p.RHints
+	}
+}
+
+func (p *Puzzle) Scan() (*Puzzle, error) {
+	for p.ChangedAny() {
+		// We need to iterate over all hints.
+		// Ruby `each_line` yields `row, index, hint`.
+		// It handles transposition internally during iteration if needed?
+		// Ruby:
+		// @hints.each_with_index do |hint, index|
+		//   row = @transposed ? index - @height : index
+		//   yield row, index, hint
+		//   transpose if index == @height - 1 or index == @height + @width - 1
+		// end
+
+		// This is a bit tricky. It transposes strictly at specific indices.
+		// index 0..height-1: rows (or cols if transposed?)
+		// Wait, Ruby `initialize` sets `@r_hints` and `@c_hints`.
+		// `@hints` contains all hints.
+		// `each_line` iterates `@hints`.
+		// If `index` is in initial rows (0..H-1): row = index.
+		// At `index == @height - 1`, it transposes.
+		// Then `index` continues (H..H+W-1).
+		// Since we transposed, now we are looking at columns as rows.
+		// `row` calculation: `index - @height`.
+		// At `index == H+W-1`, it transposes back.
+
+		// Let's model this explicit control flow.
+
+		for index, hint := range p.Hints {
+
+			var row int
+			if p.Transposed {
+				row = index - p.OriginalHeight()
+			} else {
+				row = index
+			}
+
+			// Actually, let's look at `row` calc:
+			// `row = @transposed ? index - @height : index`
+			// This assumes `index` matches current orientation?
+			// The hints array is `[RowHints..., ColHints...]`.
+			// When index < Height, we are doing RowHints.
+			// When index >= Height, we are doing ColHints.
+			// Ruby logic:
+			// 1. Process 0..Height-1 (Row hints).
+			// 2. Transpose. Grid is now WxH.
+			// 3. Process Height..Height+Width-1 (Col hints, effectively rows now).
+			// 4. Transpose back.
+
+			// My `Hints` array order: RHints then CHints.
+			// `index` corresponds to this order.
+
+			// Replicating Ruby `each_line`:
+			if index == p.OriginalHeight() && !p.Transposed {
+				// This logic in Ruby is inside the loop, triggered by previous iteration?
+				// No, `transpose if index == @height - 1`.
+				// So after processing the last row, it transposes.
+			}
+
+			if p.Changed[index] {
+				// p.Height * p.Width is constant total cells.
+				limit := p.OriginalHeight() * p.OriginalWidth() / 2
+				if p.Estimates[index] < limit {
+					err := p.SolveLine(row, index, hint)
+					if err != nil {
+						return nil, err
+					}
+					p.Changed[index] = false
+					if p.Logging {
+						// In Ruby, it calls `to_s(row)` passing the row index.
+						// `to_s` highlights that row.
+						fmt.Fprintf(p.Writer, "★\n%s\n", p.String(row))
+					}
+				} else {
+					p.Estimates[index] = p.Estimates[index] * 4 / 5
+				}
+			}
+
+			// Logic for transpose trigger
+			if index == p.OriginalHeight()-1 {
+				p.Transpose()
+			}
+			if index == len(p.Hints)-1 {
+				p.Transpose()
+			}
+		}
+	}
+	return p, nil
+}
+
+func (p *Puzzle) OriginalHeight() int {
+	// Height is set at init and never swapped in struct?
+	// In my Struct `Height`/`Width`, I should keep them constant.
+	return p.Height
+}
+
+func (p *Puzzle) OriginalWidth() int {
+	return p.Width
+}
+
+func (p *Puzzle) SolveLine(row, index int, hint []int) error {
+	answers := make([][]int, 0)
+	// Create a copy of hint for recursion
+	hintCopy := make([]int, len(hint))
+	copy(hintCopy, hint)
+
+	answers = p.solveRec(row, []int{}, hintCopy, OFF, answers)
+
+	if len(answers) == 0 {
+		return errors.New("Impossible")
+	}
+
+	// Process answers
+	// Convert RLE answers to full line arrays
+	fullAnswers := make([][]int, len(answers))
+	for k, ans := range answers {
+		arr := make([]int, 0, p.WidthNow)
+
+		// In Ruby: `answer.each_with_index{|num, i| arr.concat [(-1)**i] * num}`
+		// `(-1)**0` = 1 (OFF? No, see below).
+		// Ruby Constants: OFF=1, ON=-1.
+		// `(-1)**0` = 1 (OFF). `(-1)**1` = -1 (ON).
+		// So it starts with OFF.
+		for i, num := range ans {
+			val := 0
+			if i%2 == 0 {
+				val = OFF
+			} else {
+				val = ON
+			} // 1, -1, 1, -1...
+			for x := 0; x < num; x++ {
+				arr = append(arr, val)
+			}
+		}
+		fullAnswers[k] = arr
+	}
+
+	// Transpose fullAnswers to sum columns
+	// columns = @answers.transpose.map{|column| column.sum}
+	// fullAnswers is [Solution][Col]
+	// We want [Col][Solution] sum
+	aSize := len(answers)
+
+	for col := 0; col < p.WidthNow; col++ {
+		sumVal := 0
+		for _, sol := range fullAnswers {
+			if col < len(sol) {
+				sumVal += sol[col]
+			}
+		}
+
+		if sumVal == -aSize { // All ON (-1 * count)
+			p.Set(row, col, ON)
+		} else if sumVal == aSize { // All OFF (1 * count)
+			p.Set(row, col, OFF)
+		}
+	}
+	return nil
+}
+
+func (p *Puzzle) solveRec(row int, answer []int, hint []int, val int, results [][]int) [][]int {
+	// Ruby _solve
+	if len(hint) == 0 {
+		if sum(answer) == p.WidthNow {
+			// Need to copy answer to store it
+			ansCopy := make([]int, len(answer))
+			copy(ansCopy, answer)
+			results = append(results, ansCopy)
+		}
+		return results
+	}
+
+	// hint check
+	// Ruby: `elsif @grid[row][answer.sum, hint.first].include?(-val)`
+	// This checks if the segment we are about to place contradicts existing grid.
+	// `answer.sum` is current position. `hint.first` is length of next block.
+	// If we are placing `val` (e.g. ON or OFF), and grid has `-val` (opposite), it's invalid.
+	start := sum(answer)
+	length := hint[0]
+
+	// Bounds check?
+	if start+length > p.WidthNow {
+		// Should be caught by logic below, but careful.
+		return results
+	}
+
+	conflict := false
+	for i := 0; i < length; i++ {
+		if start+i < p.WidthNow {
+			if p.Grid[row][start+i] == -val {
+				conflict = true
+				break
+			}
+		}
+	}
+
+	if conflict {
+		return results
+	}
+
+	// Logic:
+	// if (answer.sum + hint.sum) < @width_now and val == OFF
+	//   hint_dup = hint.dup; hint_dup[0] += 1
+	//   _solve(...)
+	// end
+	// answer.push hint.shift
+	// _solve(..., -val)
+
+	currentHintSum := sum(hint) // hint[0] is included in this
+	if (sum(answer)+currentHintSum) < p.WidthNow && val == OFF {
+		hintDup := make([]int, len(hint))
+		copy(hintDup, hint)
+		hintDup[0] += 1
+
+		answerDup := make([]int, len(answer))
+		copy(answerDup, answer)
+
+		results = p.solveRec(row, answerDup, hintDup, val, results)
+	}
+
+	// shift hint
+	shiftVal := hint[0]
+	newHint := hint[1:]
+
+	answer = append(answer, shiftVal)
+	results = p.solveRec(row, answer, newHint, -val, results)
+
+	return results
+}
+
+// Solver は盤面を解くためのソルバー
+type Solver struct {
+	Logging bool
+	Writer  io.Writer // ログ出力先 (デフォルト: os.Stdout)
+}
+
+// writer は出力先を返す (未設定の場合は os.Stdout)
+func (s *Solver) writer() io.Writer {
+	if s.Writer != nil {
+		return s.Writer
+	}
+	return os.Stdout
+}
+
+func (s *Solver) Solve(filename string) error {
+	f, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var lines []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		lines = append(lines, sc.Text())
+	}
+
+	puzzle, err := NewPuzzle(lines, s.Logging)
+	if err != nil {
+		return err
+	}
+	puzzle.Writer = s.writer()
+
+	fmt.Fprintln(s.writer(), puzzle.String(-1))
+
+	// Main loop
+	stack := []*Puzzle{}
+
+	// Initial scan
+	_, err = puzzle.Scan()
+	if err != nil {
+		if err.Error() == "Impossible" {
+			return errors.New("解がありません。")
+		}
+		return err
+	}
+
+	for !puzzle.IsSolved() {
+		stack = append(stack, puzzle.Dup())
+
+		// guess ON
+		pCopy, _ := puzzle.Guess(ON) // returns self
+		_, err = pCopy.Scan()
+
+		if err != nil && err.Error() == "Impossible" {
+			// Backtrack
+			if len(stack) == 0 {
+				return errors.New("解がありません。")
+			}
+			puzzle = stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+
+			// guess OFF
+			pCopy, _ = puzzle.Guess(OFF)
+			_, err = pCopy.Scan()
+			if err != nil && err.Error() == "Impossible" {
+				if len(stack) == 0 {
+					return errors.New("解がありません。")
+				}
+				puzzle = stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				puzzle.Guess(OFF) // Just advance guess pos?
+				// Wait, Ruby logic:
+				/*
+				   puzzle = stack.pop
+				   begin
+				     puzzle.guess(OFF).scan
+				   rescue Impossible
+				     raise ... if stack.empty?
+				     puzzle = stack.pop
+				     puzzle.guess(OFF) # This doesn't scan! It just registers guess and loops?
+				   end
+				*/
+				// The last case `puzzle.guess(OFF)` (without scan) simply changes the state
+				// and lets the outer loop `until puzzle.solved?` continue?
+				// But `puzzle` in outer loop needs to be valid.
+				// If `guess(OFF)` returns without scanning, the loop continues.
+				// The loop pushes `puzzle` to stack immediately again?
+				// Yes. `stack.push puzzle.dup`.
+				// So it effectively tries to proceed from that guess.
+			}
+		}
+	}
+
+	fmt.Fprintln(s.writer(), puzzle.String(-1))
+	return nil
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: picross <filename>")
-		os.Exit(1)
+		fmt.Println("Usage: picross <filename> [-v] [-o <logfile>]")
+		return
+	}
+	filename := os.Args[1]
+	logging := false
+	outputFile := ""
+	for i := 2; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "-v":
+			logging = true
+		case "-o":
+			if i+1 < len(os.Args) {
+				i++
+				outputFile = os.Args[i]
+			}
+		}
 	}
 
-	// Read file
-	file, err := os.Open(os.Args[1])
-	if err != nil {
-		fmt.Printf("Error opening file: %v\n", err)
-		os.Exit(1)
-	}
-	defer file.Close()
+	solver := &Solver{Logging: logging}
 
-	// Read lines
-	scanner := bufio.NewScanner(file)
-	var lines []string
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error reading file: %v\n", err)
-		os.Exit(1)
+	if outputFile != "" {
+		// ファイルにUTF-8で直接書き出す
+		of, err := os.Create(outputFile)
+		if err != nil {
+			fmt.Println("Error creating output file:", err)
+			return
+		}
+		defer of.Close()
+		solver.Writer = of
 	}
 
-	// Create puzzle
-	logging := len(os.Args) > 2 && os.Args[2] == "-v"
-	puzzle, err := NewPuzzle(lines, logging)
-	if err != nil {
-		fmt.Printf("Error creating puzzle: %v\n", err)
-		os.Exit(1)
+	if err := solver.Solve(filename); err != nil {
+		fmt.Fprintln(solver.writer(), "Error:", err)
 	}
-
-	// Display initial puzzle
-	fmt.Println(puzzle)
 }
