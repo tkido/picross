@@ -49,7 +49,7 @@ func combination(n, k int) int {
 	return factorial(n) / (factorial(k) * factorial(n-k))
 }
 
-// Puzzle structure
+// Puzzle はピクロスの盤面を表す構造体
 type Puzzle struct {
 	Height     int
 	Width      int
@@ -59,6 +59,8 @@ type Puzzle struct {
 	Hints      [][]int
 	RHints     [][]int
 	CHints     [][]int
+	OrigRHints [][]int // 表示用の元のヒント（行）
+	OrigCHints [][]int // 表示用の元のヒント（列）
 	Estimates  []int
 	Changed    []bool
 	GuessPos   int
@@ -117,6 +119,18 @@ func NewPuzzle(lines []string, logging bool) (*Puzzle, error) {
 
 	if sumHints(p.RHints) != sumHints(p.CHints) {
 		return nil, errors.New("sum of row hints and column hints do not match")
+	}
+
+	// 表示用に元のヒントを保存
+	p.OrigRHints = make([][]int, len(p.RHints))
+	for i, h := range p.RHints {
+		p.OrigRHints[i] = make([]int, len(h))
+		copy(p.OrigRHints[i], h)
+	}
+	p.OrigCHints = make([][]int, len(p.CHints))
+	for i, h := range p.CHints {
+		p.OrigCHints[i] = make([]int, len(h))
+		copy(p.OrigCHints[i], h)
 	}
 
 	// Initialize estimates and changed flags
@@ -214,14 +228,21 @@ func sumHints(hints [][]int) int {
 }
 
 func (p *Puzzle) String(cursorRow int) string {
+	// 表示用の元のヒントを使用
+	rHintsDisp := p.OrigRHints
+	cHintsDisp := p.OrigCHints
+	if p.Transposed {
+		rHintsDisp, cHintsDisp = cHintsDisp, rHintsDisp
+	}
+
 	rhMax := 0
-	for _, h := range p.RHints {
+	for _, h := range rHintsDisp {
 		if len(h) > rhMax {
 			rhMax = len(h)
 		}
 	}
 	chMax := 0
-	for _, h := range p.CHints {
+	for _, h := range cHintsDisp {
 		if len(h) > chMax {
 			chMax = len(h)
 		}
@@ -229,52 +250,11 @@ func (p *Puzzle) String(cursorRow int) string {
 
 	var sb strings.Builder
 
-	// Column headers
+	// 列ヘッダー
 	for n := chMax - 1; n >= 0; n-- {
 		sb.WriteString(strings.Repeat("　", rhMax) + "｜")
-		for _, hint := range p.CHints {
-			// Hint in Ruby (after init) is transformed to [0, n, 1, n, ... 0]
-			// So we need to recover original hint for display?
-			// The Ruby code `to_s` uses `@c_hints` which points to `@hints` which was replaced by `hints_new`.
-			// So `@c_hints` contains the modified hints.
-			// Ruby `to_s`: `hint[n]` accesses the n-th element of the modified hint array?
-			// Wait, Ruby `to_s`: `(hint[n]) ? sprintf... : ' '`.
-			// If `hint` is the expanded form like [0, 2, 1, 1, 0], then `hint[n]` is just a number.
-			// Oh, but `ch_max` is calculated from `hint.size`.
-			// In Ruby's init: `hints_new` elements are arrays.
-			// If original hint was [2, 1], new is [0, 2, 1, 1, 0] (len 5).
-			// Display logic loops `n` from `ch_max-1` down to 0.
-			// It prints `hint.reverse[n]`.
-			// This prints the hint numbers vertically.
-			// But the modified hint array contains 0s and 1s (gaps). We probably don't want to print those as hints?
-			// Ruby code: `hint.reverse[n] % 100`.
-			// If the hint is [0, 2, 1, 1, 0], reverse is [0, 1, 1, 2, 0].
-			// If I print all of them, I get 0s and 1s mixed in.
-			// Does the Ruby code print the gaps?
-			// The sample format shows `2 1`.
-			// Ruby output of `puts puzzle` should be checked.
-			// Actually, looking at `to_s`:
-			// `sprintf("%2d", hint.reverse[n] % 100)`
-			// This acts on the *internal representation*.
-			// So yes, it prints the converted representation.
-			// For [2, 1] -> [0, 2, 1, 1, 0].
-			// Reverse: [0, 1, 1, 2, 0].
-			// It seems it will print 0s and 1s?
-			// Wait, standard Picross usually only shows the block sizes (2 and 1).
-			// Let's re-read Ruby init.
-			// Original: `hint` [2, 1].
-			// `arr.push(n, 1)` -> [0, 2, 1, 1, 0].
-			// The 1s are mandatory gaps (OFF). The 0s are optional gaps.
-			// It seems the Ruby code *does* print these internal values?
-			// That would be weird for a user, but accurate for internal state debugging.
-			// But wait, `hint` in `to_s` uses `@c_hints`.
-			// Ruby Init: `@hints = hints_new`.
-			// Use of `dup` on `hint` in `solve` suggests it cares about these.
-			// I will strictly copy the logic. If it prints internal repr, so be it.
-
+		for _, hint := range cHintsDisp {
 			if n < len(hint) {
-				// hint.reverse[n]
-				// Go reverse access: hint[len-1 - n]
 				val := hint[len(hint)-1-n]
 				sb.WriteString(fmt.Sprintf("%2d", val%100))
 			} else {
@@ -286,7 +266,7 @@ func (p *Puzzle) String(cursorRow int) string {
 
 	sb.WriteString(strings.Repeat("--", rhMax) + "＋" + strings.Repeat("--", p.WidthNow) + "＋\n")
 
-	for row, hint := range p.RHints {
+	for row, hint := range rHintsDisp {
 		sb.WriteString(strings.Repeat("　", rhMax-len(hint)))
 		for _, n := range hint {
 			sb.WriteString(fmt.Sprintf("%2d", n%100))
@@ -314,6 +294,8 @@ func (p *Puzzle) Dup() *Puzzle {
 		GuessPos:   p.GuessPos,
 		Logging:    p.Logging,
 		Writer:     p.Writer,
+		OrigRHints: p.OrigRHints,
+		OrigCHints: p.OrigCHints,
 	}
 
 	// Deep copy Grid
@@ -323,19 +305,12 @@ func (p *Puzzle) Dup() *Puzzle {
 		copy(newP.Grid[i], p.Grid[i])
 	}
 
-	// Hints are slices of ints, structure doesn't change, but contents might be modified?
-	// In solve, `hint.dup` is used. The `Hints` array of arrays structure is static,
-	// but the inner arrays might be modified?
-	// Ruby `solve` takes `hint`, then `hint.dup`. It doesn't modify the *original* hint in `@hints`.
-	// So shallow copy of Hints structure (slice of slices) is fine IF we don't modify underlying arrays in place globally.
-	// However, `p.Hints` refers to `p.RHints` and `p.CHints`.
-	// Let's do a deep copy to be safe.
+	// ヒントの深いコピー
 	newP.Hints = make([][]int, len(p.Hints))
 	for i, h := range p.Hints {
 		newP.Hints[i] = make([]int, len(h))
 		copy(newP.Hints[i], h)
 	}
-	// Re-link RHints/CHints
 	newP.RHints = newP.Hints[:p.Height]
 	newP.CHints = newP.Hints[p.Height:]
 
