@@ -660,10 +660,7 @@ func (s *Solver) Solve(filename string) error {
 
 	fmt.Fprintln(s.writer(), puzzle.String(-1))
 
-	// Main loop
-	stack := []*Puzzle{}
-
-	// Initial scan
+	// 初期スキャン（制約伝播のみ）
 	_, err = puzzle.Scan()
 	if err != nil {
 		if err.Error() == "Impossible" {
@@ -672,55 +669,64 @@ func (s *Solver) Solve(filename string) error {
 		return err
 	}
 
-	for !puzzle.IsSolved() {
-		stack = append(stack, puzzle.Dup())
+	if puzzle.IsSolved() {
+		// 仮定法なしで解けた → 一意解が確定
+		fmt.Fprintln(s.writer(), puzzle.String(-1))
+		return nil
+	}
 
-		// guess ON
-		pCopy, _ := puzzle.Guess(ON) // returns self
-		_, err = pCopy.Scan()
+	// 仮定法が必要 → 複数解の可能性を探索（最大2つまで）
+	var solutions []*Puzzle
+	s.searchSolutions(puzzle, &solutions, 2)
 
-		if err != nil && err.Error() == "Impossible" {
-			// Backtrack
-			if len(stack) == 0 {
-				return errors.New("解がありません。")
-			}
-			puzzle = stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
+	switch len(solutions) {
+	case 0:
+		return errors.New("解がありません。")
+	case 1:
+		fmt.Fprintln(s.writer(), solutions[0].String(-1))
+	default:
+		fmt.Fprintln(s.writer(), "複数解が存在します。")
+		for i, sol := range solutions {
+			fmt.Fprintf(s.writer(), "--- 解 %d ---\n", i+1)
+			fmt.Fprintln(s.writer(), sol.String(-1))
+		}
+	}
+	return nil
+}
 
-			// guess OFF
-			pCopy, _ = puzzle.Guess(OFF)
-			_, err = pCopy.Scan()
-			if err != nil && err.Error() == "Impossible" {
-				if len(stack) == 0 {
-					return errors.New("解がありません。")
-				}
-				puzzle = stack[len(stack)-1]
-				stack = stack[:len(stack)-1]
-				puzzle.Guess(OFF) // Just advance guess pos?
-				// Wait, Ruby logic:
-				/*
-				   puzzle = stack.pop
-				   begin
-				     puzzle.guess(OFF).scan
-				   rescue Impossible
-				     raise ... if stack.empty?
-				     puzzle = stack.pop
-				     puzzle.guess(OFF) # This doesn't scan! It just registers guess and loops?
-				   end
-				*/
-				// The last case `puzzle.guess(OFF)` (without scan) simply changes the state
-				// and lets the outer loop `until puzzle.solved?` continue?
-				// But `puzzle` in outer loop needs to be valid.
-				// If `guess(OFF)` returns without scanning, the loop continues.
-				// The loop pushes `puzzle` to stack immediately again?
-				// Yes. `stack.push puzzle.dup`.
-				// So it effectively tries to proceed from that guess.
-			}
+// searchSolutions は再帰的にパズルを解き、解を最大maxSolutions個まで探索する
+func (s *Solver) searchSolutions(puzzle *Puzzle, solutions *[]*Puzzle, maxSolutions int) {
+	if len(*solutions) >= maxSolutions {
+		return
+	}
+
+	// ON を仮定
+	onPuzzle := puzzle.Dup()
+	onPuzzle.Guess(ON)
+	_, err := onPuzzle.Scan()
+	if err == nil {
+		if onPuzzle.IsSolved() {
+			*solutions = append(*solutions, onPuzzle.Dup())
+		} else {
+			s.searchSolutions(onPuzzle, solutions, maxSolutions)
 		}
 	}
 
-	fmt.Fprintln(s.writer(), puzzle.String(-1))
-	return nil
+	if len(*solutions) >= maxSolutions {
+		return
+	}
+
+	// OFF を仮定
+	offPuzzle := puzzle.Dup()
+	offPuzzle.Guess(OFF)
+	_, err = offPuzzle.Scan()
+	if err == nil {
+		if offPuzzle.IsSolved() {
+			*solutions = append(*solutions, offPuzzle.Dup())
+		} else {
+			s.searchSolutions(offPuzzle, solutions, maxSolutions)
+		}
+	}
 }
 
 func main() {
