@@ -51,21 +51,23 @@ func combination(n, k int) int {
 
 // Puzzle はピクロスの盤面を表す構造体
 type Puzzle struct {
-	Height     int
-	Width      int
-	WidthNow   int
-	Grid       [][]int
-	Transposed bool
-	Hints      [][]int
-	RHints     [][]int
-	CHints     [][]int
-	OrigRHints [][]int // 表示用の元のヒント（行）
-	OrigCHints [][]int // 表示用の元のヒント（列）
-	Estimates  []int
-	Changed    []bool
-	GuessPos   int
-	Logging    bool
-	Writer     io.Writer
+	Height              int
+	Width               int
+	WidthNow            int
+	Grid                [][]int
+	Transposed          bool
+	Hints               [][]int
+	RHints              [][]int
+	CHints              [][]int
+	OrigRHints          [][]int // 表示用の元のヒント（行）
+	OrigCHints          [][]int // 表示用の元のヒント（列）
+	Estimates           []int
+	Changed             []bool
+	GuessPos            int
+	Logging             bool
+	Writer              io.Writer
+	InitRowEstimatesSum int // 初期見積もり（行の合計）
+	InitColEstimatesSum int // 初期見積もり（列の合計）
 }
 
 func NewPuzzle(lines []string, logging bool) (*Puzzle, error) {
@@ -201,6 +203,14 @@ func NewPuzzle(lines []string, logging bool) (*Puzzle, error) {
 	p.RHints = p.Hints[:height]
 	p.CHints = p.Hints[height:]
 
+	// 初期見積もりの合計を計算
+	for i := 0; i < height; i++ {
+		p.InitRowEstimatesSum += p.Estimates[i]
+	}
+	for i := height; i < height+width; i++ {
+		p.InitColEstimatesSum += p.Estimates[i]
+	}
+
 	return p, nil
 }
 
@@ -287,15 +297,17 @@ func (p *Puzzle) String(cursorRow int) string {
 
 func (p *Puzzle) Dup() *Puzzle {
 	newP := &Puzzle{
-		Height:     p.Height,
-		Width:      p.Width,
-		WidthNow:   p.WidthNow,
-		Transposed: p.Transposed,
-		GuessPos:   p.GuessPos,
-		Logging:    p.Logging,
-		Writer:     p.Writer,
-		OrigRHints: p.OrigRHints,
-		OrigCHints: p.OrigCHints,
+		Height:              p.Height,
+		Width:               p.Width,
+		WidthNow:            p.WidthNow,
+		Transposed:          p.Transposed,
+		GuessPos:            p.GuessPos,
+		Logging:             p.Logging,
+		Writer:              p.Writer,
+		OrigRHints:          p.OrigRHints,
+		OrigCHints:          p.OrigCHints,
+		InitRowEstimatesSum: p.InitRowEstimatesSum,
+		InitColEstimatesSum: p.InitColEstimatesSum,
 	}
 
 	// Deep copy Grid
@@ -660,6 +672,13 @@ func (s *Solver) Solve(filename string) error {
 
 	fmt.Fprintln(s.writer(), puzzle.String(-1))
 
+	// 難易度指標: 初期見積もりをログ出力
+	if s.Logging {
+		fmt.Fprintf(s.writer(), "初期見積もり: 行合計=%d, 列合計=%d, 総合計=%d\n",
+			puzzle.InitRowEstimatesSum, puzzle.InitColEstimatesSum,
+			puzzle.InitRowEstimatesSum+puzzle.InitColEstimatesSum)
+	}
+
 	// 初期スキャン（制約伝播のみ）
 	_, err = puzzle.Scan()
 	if err != nil {
@@ -671,13 +690,21 @@ func (s *Solver) Solve(filename string) error {
 
 	if puzzle.IsSolved() {
 		// 仮定法なしで解けた → 一意解が確定
+		if s.Logging {
+			fmt.Fprintln(s.writer(), "仮定法の深さ: 0（制約伝播のみで解決）")
+		}
 		fmt.Fprintln(s.writer(), puzzle.String(-1))
 		return nil
 	}
 
 	// 仮定法が必要 → 複数解の可能性を探索（最大2つまで）
 	var solutions []*Puzzle
-	s.searchSolutions(puzzle, &solutions, 2)
+	maxDepth := 0
+	s.searchSolutions(puzzle, &solutions, 2, 1, &maxDepth)
+
+	if s.Logging {
+		fmt.Fprintf(s.writer(), "仮定法の深さ: %d\n", maxDepth)
+	}
 
 	switch len(solutions) {
 	case 0:
@@ -695,7 +722,8 @@ func (s *Solver) Solve(filename string) error {
 }
 
 // searchSolutions は再帰的にパズルを解き、解を最大maxSolutions個まで探索する
-func (s *Solver) searchSolutions(puzzle *Puzzle, solutions *[]*Puzzle, maxSolutions int) {
+// depth: 現在の仮定の深さ、maxDepth: 解が見つかった時の最大深さを記録
+func (s *Solver) searchSolutions(puzzle *Puzzle, solutions *[]*Puzzle, maxSolutions int, depth int, maxDepth *int) {
 	if len(*solutions) >= maxSolutions {
 		return
 	}
@@ -707,8 +735,11 @@ func (s *Solver) searchSolutions(puzzle *Puzzle, solutions *[]*Puzzle, maxSoluti
 	if err == nil {
 		if onPuzzle.IsSolved() {
 			*solutions = append(*solutions, onPuzzle.Dup())
+			if depth > *maxDepth {
+				*maxDepth = depth
+			}
 		} else {
-			s.searchSolutions(onPuzzle, solutions, maxSolutions)
+			s.searchSolutions(onPuzzle, solutions, maxSolutions, depth+1, maxDepth)
 		}
 	}
 
@@ -723,8 +754,11 @@ func (s *Solver) searchSolutions(puzzle *Puzzle, solutions *[]*Puzzle, maxSoluti
 	if err == nil {
 		if offPuzzle.IsSolved() {
 			*solutions = append(*solutions, offPuzzle.Dup())
+			if depth > *maxDepth {
+				*maxDepth = depth
+			}
 		} else {
-			s.searchSolutions(offPuzzle, solutions, maxSolutions)
+			s.searchSolutions(offPuzzle, solutions, maxSolutions, depth+1, maxDepth)
 		}
 	}
 }
