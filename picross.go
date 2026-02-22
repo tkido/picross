@@ -376,10 +376,12 @@ func (p *Puzzle) Set(row, col, val int) {
 }
 
 func (p *Puzzle) Transpose() {
-	newGrid := make([][]int, p.Width) // New height is old width
-	for i := 0; i < p.Width; i++ {
-		newGrid[i] = make([]int, p.Height)
-		for j := 0; j < p.Height; j++ {
+	rows := len(p.Grid)
+	cols := len(p.Grid[0])
+	newGrid := make([][]int, cols)
+	for i := 0; i < cols; i++ {
+		newGrid[i] = make([]int, rows)
+		for j := 0; j < rows; j++ {
 			newGrid[i][j] = p.Grid[j][i]
 		}
 	}
