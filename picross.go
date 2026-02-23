@@ -159,16 +159,12 @@ func NewPuzzle(lines []string, logging bool) (*Puzzle, error) {
 		if len(hint) == 1 && hint[0] == 0 {
 			p.Changed[index] = true
 			p.Estimates[index] = 1
-			newHints = append(newHints, []int{p.WidthNow}) // Special case? Wait, Ruby says: hints_new.push([@width_now])
-			// Actually looking closely at Ruby code:
-			// if hint == [0] -> hints_new.push([@width_now])
-			// This treating 0 hint as a block of empty space? No, wait.
-			// In solving logic, if hint is [Width], and we solve for OFF, it fills with OFF?
-			// Let's look at solve logic.
-			// Ruby `_solve` handles hints.
-			// If `hint == [0]`, `sum` is 0.
-			// Actually, if `hint == [0]`, it pushes `[@width_now]` into `hints_new`.
-			// Let's stick to Ruby logic exactly.
+			// ヒント[0]は全セルOFFを意味する。行ヒントはWidth、列ヒントはHeight（転置後の幅）を使う
+			lineLen := p.Width
+			if index >= height {
+				lineLen = p.Height
+			}
+			newHints = append(newHints, []int{lineLen})
 		} else {
 			maxH := 0
 			for _, h := range hint {
