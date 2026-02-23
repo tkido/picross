@@ -410,31 +410,11 @@ func (p *Puzzle) Transpose() {
 }
 
 func (p *Puzzle) Scan() (*Puzzle, error) {
+	// スキャン統計
+	totalScanned := 0    // スキャンした行/列の数
+	totalCandidates := 0 // 生成した候補の総数
+
 	for p.ChangedAny() {
-		// We need to iterate over all hints.
-		// Ruby `each_line` yields `row, index, hint`.
-		// It handles transposition internally during iteration if needed?
-		// Ruby:
-		// @hints.each_with_index do |hint, index|
-		//   row = @transposed ? index - @height : index
-		//   yield row, index, hint
-		//   transpose if index == @height - 1 or index == @height + @width - 1
-		// end
-
-		// This is a bit tricky. It transposes strictly at specific indices.
-		// index 0..height-1: rows (or cols if transposed?)
-		// Wait, Ruby `initialize` sets `@r_hints` and `@c_hints`.
-		// `@hints` contains all hints.
-		// `each_line` iterates `@hints`.
-		// If `index` is in initial rows (0..H-1): row = index.
-		// At `index == @height - 1`, it transposes.
-		// Then `index` continues (H..H+W-1).
-		// Since we transposed, now we are looking at columns as rows.
-		// `row` calculation: `index - @height`.
-		// At `index == H+W-1`, it transposes back.
-
-		// Let's model this explicit control flow.
-
 		for index, hint := range p.Hints {
 
 			var row int
@@ -444,40 +424,21 @@ func (p *Puzzle) Scan() (*Puzzle, error) {
 				row = index
 			}
 
-			// Actually, let's look at `row` calc:
-			// `row = @transposed ? index - @height : index`
-			// This assumes `index` matches current orientation?
-			// The hints array is `[RowHints..., ColHints...]`.
-			// When index < Height, we are doing RowHints.
-			// When index >= Height, we are doing ColHints.
-			// Ruby logic:
-			// 1. Process 0..Height-1 (Row hints).
-			// 2. Transpose. Grid is now WxH.
-			// 3. Process Height..Height+Width-1 (Col hints, effectively rows now).
-			// 4. Transpose back.
-
-			// My `Hints` array order: RHints then CHints.
-			// `index` corresponds to this order.
-
-			// Replicating Ruby `each_line`:
 			if index == p.OriginalHeight() && !p.Transposed {
-				// This logic in Ruby is inside the loop, triggered by previous iteration?
-				// No, `transpose if index == @height - 1`.
-				// So after processing the last row, it transposes.
 			}
 
 			if p.Changed[index] {
 				// p.Height * p.Width is constant total cells.
 				limit := p.OriginalHeight() * p.OriginalWidth() / 2
 				if p.Estimates[index] < limit {
-					err := p.SolveLine(row, index, hint)
+					candidates, err := p.SolveLine(row, index, hint)
 					if err != nil {
 						return nil, err
 					}
+					totalScanned++
+					totalCandidates += candidates
 					p.Changed[index] = false
 					if p.Logging {
-						// In Ruby, it calls `to_s(row)` passing the row index.
-						// `to_s` highlights that row.
 						fmt.Fprintf(p.Writer, "★\n%s\n", p.String(row))
 					}
 				} else {
@@ -494,6 +455,12 @@ func (p *Puzzle) Scan() (*Puzzle, error) {
 			}
 		}
 	}
+
+	// スキャン統計をログ出力
+	if p.Logging {
+		fmt.Fprintf(p.Writer, "スキャン統計: スキャン数=%d, 候補総数=%d\n", totalScanned, totalCandidates)
+	}
+
 	return p, nil
 }
 
@@ -507,29 +474,26 @@ func (p *Puzzle) OriginalWidth() int {
 	return p.Width
 }
 
-func (p *Puzzle) SolveLine(row, index int, hint []int) error {
+func (p *Puzzle) SolveLine(row, index int, hint []int) (int, error) {
 	answers := make([][]int, 0)
-	// Create a copy of hint for recursion
+	// ヒントのコピーを作成（再帰用）
 	hintCopy := make([]int, len(hint))
 	copy(hintCopy, hint)
 
 	answers = p.solveRec(row, []int{}, hintCopy, OFF, answers)
 
 	if len(answers) == 0 {
-		return errors.New("Impossible")
+		return 0, errors.New("Impossible")
 	}
 
-	// Process answers
-	// Convert RLE answers to full line arrays
+	// 候補数を記録
+	numCandidates := len(answers)
+
+	// RLE形式の回答をフルライン配列に変換
 	fullAnswers := make([][]int, len(answers))
 	for k, ans := range answers {
 		arr := make([]int, 0, p.WidthNow)
 
-		// In Ruby: `answer.each_with_index{|num, i| arr.concat [(-1)**i] * num}`
-		// `(-1)**0` = 1 (OFF? No, see below).
-		// Ruby Constants: OFF=1, ON=-1.
-		// `(-1)**0` = 1 (OFF). `(-1)**1` = -1 (ON).
-		// So it starts with OFF.
 		for i, num := range ans {
 			val := 0
 			if i%2 == 0 {
@@ -544,10 +508,7 @@ func (p *Puzzle) SolveLine(row, index int, hint []int) error {
 		fullAnswers[k] = arr
 	}
 
-	// Transpose fullAnswers to sum columns
-	// columns = @answers.transpose.map{|column| column.sum}
-	// fullAnswers is [Solution][Col]
-	// We want [Col][Solution] sum
+	// 各列について全候補の合計から確定セルを判定
 	aSize := len(answers)
 
 	for col := 0; col < p.WidthNow; col++ {
@@ -558,13 +519,13 @@ func (p *Puzzle) SolveLine(row, index int, hint []int) error {
 			}
 		}
 
-		if sumVal == -aSize { // All ON (-1 * count)
+		if sumVal == -aSize { // 全候補でON (-1 * count)
 			p.Set(row, col, ON)
-		} else if sumVal == aSize { // All OFF (1 * count)
+		} else if sumVal == aSize { // 全候補でOFF (1 * count)
 			p.Set(row, col, OFF)
 		}
 	}
-	return nil
+	return numCandidates, nil
 }
 
 func (p *Puzzle) solveRec(row int, answer []int, hint []int, val int, results [][]int) [][]int {
