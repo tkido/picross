@@ -151,8 +151,12 @@ func NewPuzzle(lines []string, logging bool) (*Puzzle, error) {
 	// And in init, transposed is false.
 
 	for index, hint := range p.Hints {
-		// Validation
-		if p.WidthNow < sum(hint)+len(hint)-1 {
+		// Validation: 行ヒントは幅、列ヒントは高さに対してチェック
+		lineLen := p.Width
+		if index >= height {
+			lineLen = p.Height
+		}
+		if lineLen < sum(hint)+len(hint)-1 {
 			return nil, errors.New("hints too large for row/col")
 		}
 
